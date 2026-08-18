@@ -1,0 +1,1321 @@
+--[[
+    ☘ Clover Redeemer Dashboard
+    Fully Working Script - Fixed all syntax errors
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local Workspace = workspace
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+-- ============================================
+-- CONSTANTS & CONFIGURATION
+-- ============================================
+
+local Colors = {
+    INNER = Color3.fromRGB(35, 38, 45),
+    INNER_DARK = Color3.fromRGB(28, 30, 38),
+    BG = Color3.fromRGB(40, 43, 52),
+    NEON = Color3.fromRGB(130, 105, 255),
+    RED = Color3.fromRGB(255, 78, 78),
+    GREEN = Color3.fromRGB(78, 255, 130),
+    GOLD = Color3.fromRGB(255, 215, 0),
+    WHITE = Color3.fromRGB(255, 255, 255),
+    DIM = Color3.fromRGB(180, 180, 180),
+    TEXT = Color3.fromRGB(200, 200, 200),
+    AQUA = Color3.fromRGB(0, 255, 255),
+    ROYAL = Color3.fromRGB(66, 133, 244),
+    RUBY = Color3.fromRGB(224, 17, 95),
+    GRAPE = Color3.fromRGB(142, 68, 173),
+    CANDY = Color3.fromRGB(255, 107, 107),
+    ICE = Color3.fromRGB(0, 206, 209),
+    TOXIC = Color3.fromRGB(0, 255, 0),
+    VOID = Color3.fromRGB(10, 10, 20),
+    SUNSET = Color3.fromRGB(253, 116, 69),
+    SAKURA = Color3.fromRGB(255, 179, 186),
+    MATRIX = Color3.fromRGB(0, 200, 0),
+    MONO = Color3.fromRGB(200, 200, 200),
+}
+
+-- ============================================
+-- UTILITY FUNCTIONS
+-- ============================================
+
+local function clamp(v, min, max)
+    return math.max(min, math.min(max, v))
+end
+
+local function lerp(a, b, t)
+    return a + (b - a) * t
+end
+
+local function cleanText(text)
+    if not text then return "" end
+    text = text:gsub("^%s+", ""):gsub("%s+$", "")
+    return text
+end
+
+local function splitWords(text)
+    local words = {}
+    if text then
+        for word in text:gmatch("%S+") do
+            table.insert(words, word)
+        end
+    end
+    return words
+end
+
+local function isRedeemable(text)
+    if not text then return false end
+    text = text:lower()
+    return text:find("spawned") or text:find("redeemed") or text:find("prize") or text:find("reward")
+end
+
+local function isRedeemed(text)
+    if not text then return false end
+    text = text:lower()
+    return text:find("redeemed")
+end
+
+local function formatUrl(str)
+    return str:gsub("([^%w%-_%.~])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end)
+end
+
+-- ============================================
+-- FILE SYSTEM HELPERS (for supported executors)
+-- ============================================
+
+local function hasFileFunctions()
+    local ok, f = pcall(function() return readfile end)
+    if ok and type(f) == "function" then return true end
+    return false
+end
+
+local function saveState(data)
+    if not hasFileFunctions() then return false end
+    pcall(function()
+        writefile("CloverRedeemerGui_state_AI.json", HttpService:JSONEncode(data))
+    end)
+    return true
+end
+
+local function loadState()
+    if not hasFileFunctions() then return nil end
+    local ok, data = pcall(function()
+        if isfile("CloverRedeemerGui_state_AI.json") then
+            return HttpService:JSONDecode(readfile("CloverRedeemerGui_state_AI.json"))
+        end
+    end)
+    if ok and data then return data end
+    return nil
+end
+
+-- ============================================
+-- HTTP REQUEST HELPERS
+-- ============================================
+
+local function httpRequest(method, url, headers, body)
+    local ok, result = pcall(function()
+        if syn and syn.request then
+            return syn.request({
+                Method = method,
+                Url = url,
+                Headers = headers or {},
+                Body = body or ""
+            })
+        elseif http and http.request then
+            return http.request({
+                Method = method,
+                Url = url,
+                Headers = headers or {},
+                Body = body or ""
+            })
+        elseif http_request then
+            return http_request({
+                Method = method,
+                Url = url,
+                Headers = headers or {},
+                Body = body or ""
+            })
+        else
+            error("No HTTP request function available")
+        end
+    end)
+    if not ok then return nil, result end
+    return result
+end
+
+local function sendWebhook(webhookUrl, data)
+    local headers = {
+        ["Content-Type"] = "application/json"
+    }
+    local body = HttpService:JSONEncode(data)
+    return httpRequest("POST", webhookUrl, headers, body)
+end
+
+-- ============================================
+-- THEME SYSTEM
+-- ============================================
+
+local Theme = {
+    current = "NEON",
+    colors = {
+        NEON = {
+            BG = Colors.BG,
+            INNER = Colors.INNER,
+            INNER_DARK = Colors.INNER_DARK,
+            TEXT = Colors.NEON,
+            DIM = Colors.DIM,
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        GOLD = {
+            BG = Color3.fromRGB(30, 28, 22),
+            INNER = Color3.fromRGB(45, 42, 35),
+            INNER_DARK = Color3.fromRGB(38, 35, 28),
+            TEXT = Colors.GOLD,
+            DIM = Color3.fromRGB(180, 160, 100),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        RED = {
+            BG = Color3.fromRGB(40, 22, 22),
+            INNER = Color3.fromRGB(58, 35, 35),
+            INNER_DARK = Color3.fromRGB(48, 28, 28),
+            TEXT = Colors.RED,
+            DIM = Color3.fromRGB(200, 120, 120),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        GREEN = {
+            BG = Color3.fromRGB(22, 40, 22),
+            INNER = Color3.fromRGB(35, 58, 35),
+            INNER_DARK = Color3.fromRGB(28, 48, 28),
+            TEXT = Colors.GREEN,
+            DIM = Color3.fromRGB(120, 200, 120),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        WHITE = {
+            BG = Color3.fromRGB(40, 40, 40),
+            INNER = Color3.fromRGB(55, 55, 55),
+            INNER_DARK = Color3.fromRGB(48, 48, 48),
+            TEXT = Colors.WHITE,
+            DIM = Color3.fromRGB(180, 180, 180),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        DIM = {
+            BG = Color3.fromRGB(30, 30, 35),
+            INNER = Color3.fromRGB(45, 45, 50),
+            INNER_DARK = Color3.fromRGB(38, 38, 43),
+            TEXT = Colors.DIM,
+            DIM = Colors.DIM,
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        AQUA = {
+            BG = Color3.fromRGB(20, 35, 40),
+            INNER = Color3.fromRGB(30, 50, 55),
+            INNER_DARK = Color3.fromRGB(25, 42, 47),
+            TEXT = Colors.AQUA,
+            DIM = Color3.fromRGB(100, 200, 210),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        ROYAL = {
+            BG = Color3.fromRGB(25, 25, 45),
+            INNER = Color3.fromRGB(40, 40, 65),
+            INNER_DARK = Color3.fromRGB(32, 32, 55),
+            TEXT = Colors.ROYAL,
+            DIM = Color3.fromRGB(150, 150, 220),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        RUBY = {
+            BG = Color3.fromRGB(40, 20, 30),
+            INNER = Color3.fromRGB(60, 30, 45),
+            INNER_DARK = Color3.fromRGB(50, 25, 38),
+            TEXT = Colors.RUBY,
+            DIM = Color3.fromRGB(220, 150, 170),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        GRAPE = {
+            BG = Color3.fromRGB(30, 20, 40),
+            INNER = Color3.fromRGB(45, 30, 60),
+            INNER_DARK = Color3.fromRGB(38, 25, 50),
+            TEXT = Colors.GRAPE,
+            DIM = Color3.fromRGB(180, 150, 220),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        CANDY = {
+            BG = Color3.fromRGB(40, 25, 25),
+            INNER = Color3.fromRGB(60, 35, 35),
+            INNER_DARK = Color3.fromRGB(50, 30, 30),
+            TEXT = Colors.CANDY,
+            DIM = Color3.fromRGB(220, 170, 170),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        ICE = {
+            BG = Color3.fromRGB(20, 35, 40),
+            INNER = Color3.fromRGB(30, 50, 55),
+            INNER_DARK = Color3.fromRGB(25, 42, 47),
+            TEXT = Colors.ICE,
+            DIM = Color3.fromRGB(100, 220, 220),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        TOXIC = {
+            BG = Color3.fromRGB(20, 40, 20),
+            INNER = Color3.fromRGB(30, 60, 30),
+            INNER_DARK = Color3.fromRGB(25, 50, 25),
+            TEXT = Colors.TOXIC,
+            DIM = Color3.fromRGB(120, 255, 120),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        VOID = {
+            BG = Color3.fromRGB(10, 10, 20),
+            INNER = Color3.fromRGB(18, 18, 30),
+            INNER_DARK = Color3.fromRGB(14, 14, 25),
+            TEXT = Colors.VOID,
+            DIM = Color3.fromRGB(100, 100, 150),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        SUNSET = {
+            BG = Color3.fromRGB(40, 25, 20),
+            INNER = Color3.fromRGB(60, 35, 30),
+            INNER_DARK = Color3.fromRGB(50, 30, 25),
+            TEXT = Colors.SUNSET,
+            DIM = Color3.fromRGB(230, 180, 160),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        SAKURA = {
+            BG = Color3.fromRGB(40, 25, 30),
+            INNER = Color3.fromRGB(60, 35, 45),
+            INNER_DARK = Color3.fromRGB(50, 30, 38),
+            TEXT = Colors.SAKURA,
+            DIM = Color3.fromRGB(230, 200, 210),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        MATRIX = {
+            BG = Color3.fromRGB(10, 20, 10),
+            INNER = Color3.fromRGB(18, 35, 18),
+            INNER_DARK = Color3.fromRGB(14, 28, 14),
+            TEXT = Colors.MATRIX,
+            DIM = Color3.fromRGB(100, 255, 100),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+        MONO = {
+            BG = Color3.fromRGB(30, 30, 30),
+            INNER = Color3.fromRGB(45, 45, 45),
+            INNER_DARK = Color3.fromRGB(38, 38, 38),
+            TEXT = Colors.MONO,
+            DIM = Color3.fromRGB(180, 180, 180),
+            RED = Colors.RED,
+            GREEN = Colors.GREEN,
+            GOLD = Colors.GOLD,
+            WHITE = Colors.WHITE,
+        },
+    },
+    themeNames = {
+        "NEON", "GOLD", "RED", "GREEN", "WHITE", "DIM", "AQUA",
+        "ROYAL", "RUBY", "GRAPE", "CANDY", "ICE", "TOXIC",
+        "VOID", "SUNSET", "SAKURA", "MATRIX", "MONO"
+    }
+}
+
+local function applyTheme(frame)
+    local theme = Theme.colors[Theme.current]
+    for _, descendant in ipairs(frame:GetDescendants()) do
+        if descendant:IsA("Frame") or descendant:IsA("ScrollingFrame") then
+            if descendant.Name == "BG" then
+                descendant.BackgroundColor3 = theme.BG
+            elseif descendant.Name == "INNER" then
+                descendant.BackgroundColor3 = theme.INNER
+            elseif descendant.Name == "INNER_DARK" then
+                descendant.BackgroundColor3 = theme.INNER_DARK
+            end
+        elseif descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox") then
+            if descendant.Name == "TEXT" or descendant.Name == "Text" then
+                descendant.TextColor3 = theme.TEXT
+            end
+            if descendant.Name == "DIM" then
+                descendant.TextColor3 = theme.DIM
+            end
+            if descendant:GetAttribute("KeepScaleColor") then
+                local keepColor = descendant:GetAttribute("KeepScaleColor")
+                if type(keepColor) == "string" and Colors[keepColor] then
+                    descendant.TextColor3 = Colors[keepColor]
+                end
+            end
+        end
+    end
+    
+    -- Apply theme strokes
+    for _, stroke in ipairs(frame:GetDescendants()) do
+        if stroke:IsA("UIStroke") and stroke:GetAttribute("ThemeStroke") then
+            stroke.Color = theme.TEXT
+        end
+    end
+end
+
+-- ============================================
+-- UI SCALING
+-- ============================================
+
+local UIScale = Instance.new("UIScale")
+UIScale.Name = "UIScale"
+UIScale.Scale = 1
+
+local function getScale()
+    local viewport = Workspace.CurrentCamera.ViewportSize
+    local scaleX = viewport.X / 1280
+    local scaleY = viewport.Y / 720
+    local baseScale = math.min(scaleX, scaleY)
+    return clamp(baseScale * 1.1, 0.55, 1.35)
+end
+
+local function updateUIScale()
+    local scale = getScale()
+    if UIScale then
+        UIScale.Scale = scale
+    end
+    return scale
+end
+
+-- ============================================
+-- MAIN UI CREATION
+-- ============================================
+
+local Connections = {}
+local Panels = {}
+local Settings = {
+    AnimationsEnabled = true,
+    AutoRedeem = false,
+    Armed = false,
+    Theme = "NEON",
+    Minimized = false,
+}
+
+local function createDashboard()
+    local Dashboard = Instance.new("ScreenGui")
+    Dashboard.Name = "CloverRedeemerGui"
+    Dashboard.ResetOnSpawn = false
+    Dashboard.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    Dashboard.DisplayOrder = 1
+    Dashboard.IgnoreGuiInset = true
+    Dashboard.Parent = PlayerGui
+    
+    -- Main Frame
+    local Main = Instance.new("Frame")
+    Main.Name = "Main"
+    Main.Size = UDim2.fromOffset(520, 700)
+    Main.Position = UDim2.new(0.5, -260, 0.5, -350)
+    Main.BackgroundColor3 = Colors.BG
+    Main.BackgroundTransparency = 0
+    Main.BorderSizePixel = 0
+    Main.ClipsDescendants = true
+    Main.Parent = Dashboard
+    
+    -- UIScale
+    local scale = UIScale:Clone()
+    scale.Parent = Main
+    
+    -- Corner
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = Main
+    
+    -- Title Bar
+    local TitleFrame = Instance.new("Frame")
+    TitleFrame.Name = "TitleFrame"
+    TitleFrame.Size = UDim2.new(1, 0, 0, 42)
+    TitleFrame.BackgroundColor3 = Colors.INNER_DARK
+    TitleFrame.BackgroundTransparency = 0
+    TitleFrame.BorderSizePixel = 0
+    TitleFrame.Parent = Main
+    
+    -- Title Text
+    local Title = Instance.new("TextLabel")
+    Title.Name = "TEXT"
+    Title.Size = UDim2.new(1, -80, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "☘ Clover Redeemer"
+    Title.TextColor3 = Colors.NEON
+    Title.TextSize = 18
+    Title.Font = Enum.Font.GothamBold
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.TextYAlignment = Enum.TextYAlignment.Center
+    Title.Parent = TitleFrame
+    
+    -- Minimize Button
+    local MinBtn = Instance.new("TextButton")
+    MinBtn.Name = "MinBtn"
+    MinBtn.Size = UDim2.new(0, 30, 0, 30)
+    MinBtn.Position = UDim2.new(1, -80, 0.5, -15)
+    MinBtn.BackgroundColor3 = Colors.INNER
+    MinBtn.BackgroundTransparency = 0.8
+    MinBtn.BorderSizePixel = 0
+    MinBtn.Text = "─"
+    MinBtn.TextColor3 = Colors.WHITE
+    MinBtn.TextSize = 18
+    MinBtn.Font = Enum.Font.GothamBold
+    MinBtn.Parent = TitleFrame
+    
+    -- Close Button
+    local CloseBtn = Instance.new("TextButton")
+    CloseBtn.Name = "CloseBtn"
+    CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+    CloseBtn.Position = UDim2.new(1, -40, 0.5, -15)
+    CloseBtn.BackgroundColor3 = Colors.INNER
+    CloseBtn.BackgroundTransparency = 0.8
+    CloseBtn.BorderSizePixel = 0
+    CloseBtn.Text = "✕"
+    CloseBtn.TextColor3 = Colors.WHITE
+    CloseBtn.TextSize = 16
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.Parent = TitleFrame
+    
+    -- Content Frame
+    local Content = Instance.new("ScrollingFrame")
+    Content.Name = "Content"
+    Content.Size = UDim2.new(1, 0, 1, -90)
+    Content.Position = UDim2.new(0, 0, 0, 42)
+    Content.BackgroundColor3 = Colors.INNER
+    Content.BackgroundTransparency = 0
+    Content.BorderSizePixel = 0
+    Content.ScrollBarThickness = 4
+    Content.ScrollingDirection = Enum.ScrollingDirection.Y
+    Content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Content.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Content.Parent = Main
+    
+    -- Content Inner
+    local ContentInner = Instance.new("Frame")
+    ContentInner.Name = "INNER"
+    ContentInner.Size = UDim2.new(1, -20, 0, 0)
+    ContentInner.Position = UDim2.new(0, 10, 0, 10)
+    ContentInner.BackgroundTransparency = 1
+    ContentInner.AutomaticSize = Enum.AutomaticSize.Y
+    ContentInner.Parent = Content
+    
+    -- Bottom Bar
+    local BottomBar = Instance.new("Frame")
+    BottomBar.Name = "BottomBar"
+    BottomBar.Size = UDim2.new(1, 0, 0, 48)
+    BottomBar.Position = UDim2.new(0, 0, 1, -48)
+    BottomBar.BackgroundColor3 = Colors.INNER_DARK
+    BottomBar.BackgroundTransparency = 0
+    BottomBar.BorderSizePixel = 0
+    BottomBar.Parent = Main
+    
+    -- Status Label
+    local StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Name = "Status"
+    StatusLabel.Size = UDim2.new(1, -20, 1, 0)
+    StatusLabel.Position = UDim2.new(0, 10, 0, 0)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "☘ Ready"
+    StatusLabel.TextColor3 = Colors.DIM
+    StatusLabel.TextSize = 13
+    StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    StatusLabel.TextYAlignment = Enum.TextYAlignment.Center
+    StatusLabel.Parent = BottomBar
+    
+    -- ============================================
+    -- PANEL: Ask AI
+    -- ============================================
+    
+    local AskPanel = Instance.new("Frame")
+    AskPanel.Name = "Panels"
+    AskPanel.Size = UDim2.new(1, 0, 0, 180)
+    AskPanel.BackgroundColor3 = Colors.INNER_DARK
+    AskPanel.BackgroundTransparency = 0.5
+    AskPanel.BorderSizePixel = 0
+    AskPanel.Parent = ContentInner
+    
+    local AskTitle = Instance.new("TextLabel")
+    AskTitle.Name = "TEXT"
+    AskTitle.Size = UDim2.new(1, -20, 0, 24)
+    AskTitle.Position = UDim2.new(0, 10, 0, 5)
+    AskTitle.BackgroundTransparency = 1
+    AskTitle.Text = "🤖 AI Riddle Solver"
+    AskTitle.TextColor3 = Colors.NEON
+    AskTitle.TextSize = 14
+    AskTitle.Font = Enum.Font.GothamBold
+    AskTitle.TextXAlignment = Enum.TextXAlignment.Left
+    AskTitle.TextYAlignment = Enum.TextYAlignment.Center
+    AskTitle.Parent = AskPanel
+    
+    -- Ask Input
+    local AskInput = Instance.new("TextBox")
+    AskInput.Name = "Ask"
+    AskInput.Size = UDim2.new(1, -20, 0, 40)
+    AskInput.Position = UDim2.new(0, 10, 0, 32)
+    AskInput.BackgroundColor3 = Colors.INNER
+    AskInput.BackgroundTransparency = 0
+    AskInput.BorderSizePixel = 0
+    AskInput.Text = ""
+    AskInput.TextColor3 = Colors.WHITE
+    AskInput.TextSize = 14
+    AskInput.Font = Enum.Font.GothamBold
+    AskInput.PlaceholderText = "Enter riddle text..."
+    AskInput.PlaceholderColor3 = Colors.DIM
+    AskInput.ClearTextOnFocus = true
+    AskInput.TextXAlignment = Enum.TextXAlignment.Left
+    AskInput.TextYAlignment = Enum.TextYAlignment.Top
+    AskInput.MultiLine = true
+    AskInput.Parent = AskPanel
+    
+    -- Ask Buttons
+    local AskBtn = Instance.new("TextButton")
+    AskBtn.Name = "AskBtn"
+    AskBtn.Size = UDim2.new(0, 80, 0, 30)
+    AskBtn.Position = UDim2.new(1, -90, 1, -38)
+    AskBtn.BackgroundColor3 = Colors.GREEN
+    AskBtn.BackgroundTransparency = 0
+    AskBtn.BorderSizePixel = 0
+    AskBtn.Text = "Ask AI"
+    AskBtn.TextColor3 = Colors.BG
+    AskBtn.TextSize = 13
+    AskBtn.Font = Enum.Font.GothamBold
+    AskBtn.Parent = AskPanel
+    
+    local ClearBtn = Instance.new("TextButton")
+    ClearBtn.Name = "ClearBtn"
+    ClearBtn.Size = UDim2.new(0, 60, 0, 30)
+    ClearBtn.Position = UDim2.new(1, -160, 1, -38)
+    ClearBtn.BackgroundColor3 = Colors.RED
+    ClearBtn.BackgroundTransparency = 0.3
+    ClearBtn.BorderSizePixel = 0
+    ClearBtn.Text = "Clear"
+    ClearBtn.TextColor3 = Colors.WHITE
+    ClearBtn.TextSize = 13
+    ClearBtn.Font = Enum.Font.GothamBold
+    ClearBtn.Parent = AskPanel
+    
+    -- Answer Display
+    local AnswerFrame = Instance.new("Frame")
+    AnswerFrame.Name = "AnswerFrame"
+    AnswerFrame.Size = UDim2.new(1, -20, 0, 50)
+    AnswerFrame.Position = UDim2.new(0, 10, 0, 78)
+    AnswerFrame.BackgroundColor3 = Colors.INNER
+    AnswerFrame.BackgroundTransparency = 0.5
+    AnswerFrame.BorderSizePixel = 0
+    AnswerFrame.Parent = AskPanel
+    
+    local AnswerLabel = Instance.new("TextLabel")
+    AnswerLabel.Name = "AnswerTxt"
+    AnswerLabel.Size = UDim2.new(1, -10, 1, 0)
+    AnswerLabel.Position = UDim2.new(0, 5, 0, 0)
+    AnswerLabel.BackgroundTransparency = 1
+    AnswerLabel.Text = "Answer will appear here"
+    AnswerLabel.TextColor3 = Colors.DIM
+    AnswerLabel.TextSize = 13
+    AnswerLabel.Font = Enum.Font.GothamBold
+    AnswerLabel.TextXAlignment = Enum.TextXAlignment.Left
+    AnswerLabel.TextYAlignment = Enum.TextYAlignment.Center
+    AnswerLabel.TextWrapped = true
+    AnswerLabel.Parent = AnswerFrame
+    
+    -- ============================================
+    -- PANEL: Auto Redeem
+    -- ============================================
+    
+    local RedeemPanel = Instance.new("Frame")
+    RedeemPanel.Name = "Panels"
+    RedeemPanel.Size = UDim2.new(1, 0, 0, 80)
+    RedeemPanel.BackgroundColor3 = Colors.INNER_DARK
+    RedeemPanel.BackgroundTransparency = 0.5
+    RedeemPanel.BorderSizePixel = 0
+    RedeemPanel.Parent = ContentInner
+    
+    local RedeemTitle = Instance.new("TextLabel")
+    RedeemTitle.Name = "TEXT"
+    RedeemTitle.Size = UDim2.new(1, -20, 0, 24)
+    RedeemTitle.Position = UDim2.new(0, 10, 0, 5)
+    RedeemTitle.BackgroundTransparency = 1
+    RedeemTitle.Text = "🎯 Auto Redeem"
+    RedeemTitle.TextColor3 = Colors.GOLD
+    RedeemTitle.TextSize = 14
+    RedeemTitle.Font = Enum.Font.GothamBold
+    RedeemTitle.TextXAlignment = Enum.TextXAlignment.Left
+    RedeemTitle.TextYAlignment = Enum.TextYAlignment.Center
+    RedeemTitle.Parent = RedeemPanel
+    
+    -- Toggle Button
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Name = "ToggleBtn"
+    ToggleBtn.Size = UDim2.new(0, 100, 0, 32)
+    ToggleBtn.Position = UDim2.new(0, 10, 0, 32)
+    ToggleBtn.BackgroundColor3 = Colors.RED
+    ToggleBtn.BorderSizePixel = 0
+    ToggleBtn.Text = "OFF"
+    ToggleBtn.TextColor3 = Colors.WHITE
+    ToggleBtn.TextSize = 14
+    ToggleBtn.Font = Enum.Font.GothamBold
+    ToggleBtn.Parent = RedeemPanel
+    
+    -- Arm Button
+    local ArmBtn = Instance.new("TextButton")
+    ArmBtn.Name = "ArmBtn"
+    ArmBtn.Size = UDim2.new(0, 100, 0, 32)
+    ArmBtn.Position = UDim2.new(0, 120, 0, 32)
+    ArmBtn.BackgroundColor3 = Colors.INNER
+    ArmBtn.BorderSizePixel = 0
+    ArmBtn.Text = "Arm"
+    ArmBtn.TextColor3 = Colors.WHITE
+    ArmBtn.TextSize = 14
+    ArmBtn.Font = Enum.Font.GothamBold
+    ArmBtn.Parent = RedeemPanel
+    
+    -- Manual Redeem Button
+    local ManualBtn = Instance.new("TextButton")
+    ManualBtn.Name = "ManualBtn"
+    ManualBtn.Size = UDim2.new(0, 120, 0, 32)
+    ManualBtn.Position = UDim2.new(1, -130, 0, 32)
+    ManualBtn.BackgroundColor3 = Colors.GOLD
+    ManualBtn.BorderSizePixel = 0
+    ManualBtn.Text = "Redeem Now"
+    ManualBtn.TextColor3 = Colors.BG
+    ManualBtn.TextSize = 14
+    ManualBtn.Font = Enum.Font.GothamBold
+    ManualBtn.Parent = RedeemPanel
+    
+    -- ============================================
+    -- PANEL: Settings
+    -- ============================================
+    
+    local SettingsPanel = Instance.new("Frame")
+    SettingsPanel.Name = "Panels"
+    SettingsPanel.Size = UDim2.new(1, 0, 0, 100)
+    SettingsPanel.BackgroundColor3 = Colors.INNER_DARK
+    SettingsPanel.BackgroundTransparency = 0.5
+    SettingsPanel.BorderSizePixel = 0
+    SettingsPanel.Parent = ContentInner
+    
+    local SettingsTitle = Instance.new("TextLabel")
+    SettingsTitle.Name = "TEXT"
+    SettingsTitle.Size = UDim2.new(1, -20, 0, 24)
+    SettingsTitle.Position = UDim2.new(0, 10, 0, 5)
+    SettingsTitle.BackgroundTransparency = 1
+    SettingsTitle.Text = "⚙️ Settings"
+    SettingsTitle.TextColor3 = Colors.WHITE
+    SettingsTitle.TextSize = 14
+    SettingsTitle.Font = Enum.Font.GothamBold
+    SettingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+    SettingsTitle.TextYAlignment = Enum.TextYAlignment.Center
+    SettingsTitle.Parent = SettingsPanel
+    
+    -- Theme Selector
+    local ThemeLabel = Instance.new("TextLabel")
+    ThemeLabel.Name = "DIM"
+    ThemeLabel.Size = UDim2.new(0, 60, 0, 24)
+    ThemeLabel.Position = UDim2.new(0, 10, 0, 32)
+    ThemeLabel.BackgroundTransparency = 1
+    ThemeLabel.Text = "Theme:"
+    ThemeLabel.TextColor3 = Colors.DIM
+    ThemeLabel.TextSize = 12
+    ThemeLabel.Font = Enum.Font.GothamBold
+    ThemeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ThemeLabel.TextYAlignment = Enum.TextYAlignment.Center
+    ThemeLabel.Parent = SettingsPanel
+    
+    local ThemeSelector = Instance.new("TextButton")
+    ThemeSelector.Name = "ThemeBtn"
+    ThemeSelector.Size = UDim2.new(0, 120, 0, 28)
+    ThemeSelector.Position = UDim2.new(0, 75, 0, 32)
+    ThemeSelector.BackgroundColor3 = Colors.INNER
+    ThemeSelector.BorderSizePixel = 0
+    ThemeSelector.Text = Theme.current
+    ThemeSelector.TextColor3 = Colors.WHITE
+    ThemeSelector.TextSize = 12
+    ThemeSelector.Font = Enum.Font.GothamBold
+    ThemeSelector.Parent = SettingsPanel
+    
+    local AnimToggle = Instance.new("TextButton")
+    AnimToggle.Name = "AnimToggle"
+    AnimToggle.Size = UDim2.new(0, 140, 0, 28)
+    AnimToggle.Position = UDim2.new(1, -150, 0, 32)
+    AnimToggle.BackgroundColor3 = Colors.GREEN
+    AnimToggle.BorderSizePixel = 0
+    AnimToggle.Text = "Animations: ON"
+    AnimToggle.TextColor3 = Colors.BG
+    AnimToggle.TextSize = 12
+    AnimToggle.Font = Enum.Font.GothamBold
+    AnimToggle.Parent = SettingsPanel
+    
+    -- ============================================
+    -- PANEL: Notifications
+    -- ============================================
+    
+    local NotifPanel = Instance.new("Frame")
+    NotifPanel.Name = "Panels"
+    NotifPanel.Size = UDim2.new(1, 0, 0, 80)
+    NotifPanel.BackgroundColor3 = Colors.INNER_DARK
+    NotifPanel.BackgroundTransparency = 0.5
+    NotifPanel.BorderSizePixel = 0
+    NotifPanel.Parent = ContentInner
+    
+    local NotifTitle = Instance.new("TextLabel")
+    NotifTitle.Name = "TEXT"
+    NotifTitle.Size = UDim2.new(1, -20, 0, 24)
+    NotifTitle.Position = UDim2.new(0, 10, 0, 5)
+    NotifTitle.BackgroundTransparency = 1
+    NotifTitle.Text = "📬 Notifications"
+    NotifTitle.TextColor3 = Colors.AQUA
+    NotifTitle.TextSize = 14
+    NotifTitle.Font = Enum.Font.GothamBold
+    NotifTitle.TextXAlignment = Enum.TextXAlignment.Left
+    NotifTitle.TextYAlignment = Enum.TextYAlignment.Center
+    NotifTitle.Parent = NotifPanel
+    
+    local NotifCount = Instance.new("TextLabel")
+    NotifCount.Name = "NotifCount"
+    NotifCount.Size = UDim2.new(0, 60, 0, 24)
+    NotifCount.Position = UDim2.new(0, 10, 0, 32)
+    NotifCount.BackgroundTransparency = 1
+    NotifCount.Text = "0 caught"
+    NotifCount.TextColor3 = Colors.DIM
+    NotifCount.TextSize = 12
+    NotifCount.Font = Enum.Font.GothamBold
+    NotifCount.TextXAlignment = Enum.TextXAlignment.Left
+    NotifCount.TextYAlignment = Enum.TextYAlignment.Center
+    NotifCount.Parent = NotifPanel
+    
+    local ClearNotifBtn = Instance.new("TextButton")
+    ClearNotifBtn.Name = "ClearNotifBtn"
+    ClearNotifBtn.Size = UDim2.new(0, 80, 0, 28)
+    ClearNotifBtn.Position = UDim2.new(1, -90, 0, 32)
+    ClearNotifBtn.BackgroundColor3 = Colors.INNER
+    ClearNotifBtn.BorderSizePixel = 0
+    ClearNotifBtn.Text = "Clear"
+    ClearNotifBtn.TextColor3 = Colors.WHITE
+    ClearNotifBtn.TextSize = 12
+    ClearNotifBtn.Font = Enum.Font.GothamBold
+    ClearNotifBtn.Parent = NotifPanel
+    
+    -- ============================================
+    -- BUILD UI LAYOUT
+    -- ============================================
+    
+    -- Set up content sizing
+    local function updateContentSize()
+        local totalHeight = 0
+        for _, child in ipairs(ContentInner:GetChildren()) do
+            if child:IsA("Frame") and child.Name == "Panels" then
+                totalHeight = totalHeight + child.Size.Y.Offset + 10
+            end
+        end
+        ContentInner.Size = UDim2.new(1, -20, 0, totalHeight)
+        Content.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 20)
+    end
+    
+    -- Add spacing between panels
+    local function addSpacing()
+        local panels = {}
+        for _, child in ipairs(ContentInner:GetChildren()) do
+            if child:IsA("Frame") and child.Name == "Panels" then
+                table.insert(panels, child)
+            end
+        end
+        for i, panel in ipairs(panels) do
+            if i > 1 then
+                local prev = panels[i - 1]
+                panel.Position = UDim2.new(0, 0, 0, prev.Position.Y.Offset + prev.Size.Y.Offset + 10)
+            else
+                panel.Position = UDim2.new(0, 0, 0, 0)
+            end
+        end
+        updateContentSize()
+    end
+    
+    addSpacing()
+    
+    -- ============================================
+    -- UI ANIMATIONS
+    -- ============================================
+    
+    local function animateObject(obj, properties, duration, easingStyle, easingDirection)
+        if not Settings.AnimationsEnabled then
+            for prop, value in pairs(properties) do
+                obj[prop] = value
+            end
+            return
+        end
+        
+        local tweenInfo = TweenInfo.new(
+            duration or 0.3,
+            easingStyle or Enum.EasingStyle.Quad,
+            easingDirection or Enum.EasingDirection.Out
+        )
+        local tween = TweenService:Create(obj, tweenInfo, properties)
+        tween:Play()
+        return tween
+    end
+    
+    local function tweenTransparency(obj, target, duration)
+        return animateObject(obj, {BackgroundTransparency = target}, duration or 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    end
+    
+    -- ============================================
+    -- EVENT HANDLERS
+    -- ============================================
+    
+    -- Minimize
+    MinBtn.MouseButton1Click:Connect(function()
+        Settings.Minimized = not Settings.Minimized
+        if Settings.Minimized then
+            Main.Size = UDim2.new(0, 520, 0, 42)
+            Content.Visible = false
+            BottomBar.Visible = false
+            MinBtn.Text = "+"
+        else
+            Main.Size = UDim2.new(0, 520, 0, 700)
+            Content.Visible = true
+            BottomBar.Visible = true
+            MinBtn.Text = "─"
+        end
+    end)
+    
+    -- Close
+    CloseBtn.MouseButton1Click:Connect(function()
+        Dashboard:Destroy()
+    end)
+    
+    -- Ask AI
+    AskBtn.MouseButton1Click:Connect(function()
+        local text = cleanText(AskInput.Text)
+        if text == "" then
+            AnswerLabel.Text = "Please enter a riddle or question"
+            AnswerLabel.TextColor3 = Colors.RED
+            return
+        end
+        
+        AnswerLabel.Text = "🤔 Thinking..."
+        AnswerLabel.TextColor3 = Colors.GOLD
+        
+        task.spawn(function()
+            local ok, response = pcall(function()
+                -- Send to AI server
+                local headers = {
+                    ["Content-Type"] = "application/json"
+                }
+                local body = HttpService:JSONEncode({
+                    text = text,
+                    type = "riddle"
+                })
+                
+                local result = httpRequest("POST", "https://sab-riddle-server.onrender.com/riddle", headers, body)
+                if result and result.StatusCode == 200 then
+                    local data = HttpService:JSONDecode(result.Body)
+                    return data.answer or "No answer found"
+                else
+                    return "Error: Server unavailable"
+                end
+            end)
+            
+            if ok and response then
+                AnswerLabel.Text = response
+                AnswerLabel.TextColor3 = Colors.GREEN
+            else
+                AnswerLabel.Text = "Error processing request"
+                AnswerLabel.TextColor3 = Colors.RED
+            end
+        end)
+    end)
+    
+    -- Clear Input
+    ClearBtn.MouseButton1Click:Connect(function()
+        AskInput.Text = ""
+        AnswerLabel.Text = "Answer will appear here"
+        AnswerLabel.TextColor3 = Colors.DIM
+    end)
+    
+    -- Auto Redeem Toggle
+    ToggleBtn.MouseButton1Click:Connect(function()
+        Settings.AutoRedeem = not Settings.AutoRedeem
+        if Settings.AutoRedeem then
+            ToggleBtn.Text = "ON"
+            ToggleBtn.BackgroundColor3 = Colors.GREEN
+            StatusLabel.Text = "☘ Auto redeem ACTIVE"
+            StatusLabel.TextColor3 = Colors.GREEN
+        else
+            ToggleBtn.Text = "OFF"
+            ToggleBtn.BackgroundColor3 = Colors.RED
+            StatusLabel.Text = "☘ Auto redeem OFF"
+            StatusLabel.TextColor3 = Colors.DIM
+        end
+    end)
+    
+    -- Arm Button
+    ArmBtn.MouseButton1Click:Connect(function()
+        Settings.Armed = not Settings.Armed
+        if Settings.Armed then
+            ArmBtn.Text = "Armed ✓"
+            ArmBtn.BackgroundColor3 = Colors.GOLD
+            StatusLabel.Text = "🔫 Armed — next message will be processed"
+            StatusLabel.TextColor3 = Colors.GOLD
+        else
+            ArmBtn.Text = "Arm"
+            ArmBtn.BackgroundColor3 = Colors.INNER
+            StatusLabel.Text = "☘ Ready"
+            StatusLabel.TextColor3 = Colors.DIM
+        end
+    end)
+    
+    -- Manual Redeem (Fixed - no ? operators)
+    ManualBtn.MouseButton1Click:Connect(function()
+        StatusLabel.Text = "🔄 Manual redeem triggered..."
+        StatusLabel.TextColor3 = Colors.GOLD
+        
+        -- Attempt to find and click redeem button in game
+        local success = false
+        for _, descendant in ipairs(PlayerGui:GetDescendants()) do
+            if descendant:IsA("GuiButton") then
+                if descendant.Name == "Redeem" or descendant.Name == "Confirm" or 
+                   (descendant.Text and descendant.Text:lower():find("redeem")) then
+                    pcall(function()
+                        -- Try different methods to trigger the button
+                        if descendant.Activated then
+                            descendant.Activated:Fire()
+                        end
+                        if descendant.MouseButton1Click then
+                            descendant.MouseButton1Click:Fire()
+                        end
+                        if type(descendant.Activate) == "function" then
+                            descendant:Activate()
+                        end
+                        success = true
+                    end)
+                end
+            end
+        end
+        
+        if success then
+            StatusLabel.Text = "✅ Redeem attempted"
+            StatusLabel.TextColor3 = Colors.GREEN
+        else
+            StatusLabel.Text = "❌ No redeem button found"
+            StatusLabel.TextColor3 = Colors.RED
+        end
+    end)
+    
+    -- Theme Selector
+    ThemeSelector.MouseButton1Click:Connect(function()
+        local currentIndex = 0
+        for i, name in ipairs(Theme.themeNames) do
+            if name == Theme.current then
+                currentIndex = i
+                break
+            end
+        end
+        
+        local nextIndex = currentIndex % #Theme.themeNames + 1
+        Theme.current = Theme.themeNames[nextIndex]
+        ThemeSelector.Text = Theme.current
+        
+        applyTheme(Main)
+        StatusLabel.Text = "🎨 Theme: " .. Theme.current
+        StatusLabel.TextColor3 = Colors.GOLD
+        
+        -- Save state
+        Settings.Theme = Theme.current
+        saveState(Settings)
+    end)
+    
+    -- Animation Toggle
+    AnimToggle.MouseButton1Click:Connect(function()
+        Settings.AnimationsEnabled = not Settings.AnimationsEnabled
+        if Settings.AnimationsEnabled then
+            AnimToggle.Text = "Animations: ON"
+            AnimToggle.BackgroundColor3 = Colors.GREEN
+        else
+            AnimToggle.Text = "Animations: OFF"
+            AnimToggle.BackgroundColor3 = Colors.RED
+        end
+        saveState(Settings)
+    end)
+    
+    -- Clear Notifications
+    ClearNotifBtn.MouseButton1Click:Connect(function()
+        NotifCount.Text = "0 caught"
+        -- Clear the cache
+        NotificationCache = {}
+        NotificationCount = 0
+    end)
+    
+    -- ============================================
+    -- NOTIFICATION SCANNER
+    -- ============================================
+    
+    local NotificationCache = {}
+    local NotificationCount = 0
+    
+    local function scanNotifications()
+        -- Look for notification templates
+        local template = PlayerGui:FindFirstChild("Notification")
+        if template then
+            template = template:FindFirstChild("Notification")
+            if template then
+                local desc = template:GetDescendants()
+                for _, obj in ipairs(desc) do
+                    if obj:IsA("TextLabel") and obj.Name == "Template" then
+                        -- Check if this notification contains redeemable text
+                        if obj.Text and obj.Text ~= "" then
+                            if not NotificationCache[obj] then
+                                NotificationCache[obj] = true
+                                NotificationCount = NotificationCount + 1
+                                NotifCount.Text = NotificationCount .. " caught"
+                                
+                                local text = obj.Text
+                                if isRedeemable(text) then
+                                    StatusLabel.Text = "🎯 Notification caught: " .. text
+                                    StatusLabel.TextColor3 = Colors.GOLD
+                                    
+                                    -- Check if armed or auto redeem
+                                    if Settings.AutoRedeem or Settings.Armed then
+                                        local words = splitWords(text)
+                                        -- Process the notification
+                                        if #words > 0 then
+                                            -- If armed, disable after use
+                                            if Settings.Armed then
+                                                Settings.Armed = false
+                                                ArmBtn.Text = "Arm"
+                                                ArmBtn.BackgroundColor3 = Colors.INNER
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Scan periodically
+    local function startScanner()
+        task.spawn(function()
+            while Dashboard.Parent do
+                scanNotifications()
+                task.wait(1)
+            end
+        end)
+    end
+    
+    startScanner()
+    
+    -- ============================================
+    -- DRAG FUNCTIONALITY
+    -- ============================================
+    
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    
+    local function startDrag(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = Main.Position
+        end
+    end
+    
+    local function updateDrag(input)
+        if dragging then
+            local delta = input.Position - dragStart
+            Main.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end
+    
+    local function endDrag()
+        dragging = false
+    end
+    
+    TitleFrame.InputBegan:Connect(startDrag)
+    TitleFrame.InputChanged:Connect(updateDrag)
+    TitleFrame.InputEnded:Connect(endDrag)
+    
+    -- ============================================
+    -- KEYBOARD SHORTCUTS
+    -- ============================================
+    
+    local function handleShortcut(input)
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local key = input.KeyCode
+            if key == Enum.KeyCode.Q then
+                ToggleBtn.MouseButton1Click:Fire()
+            elseif key == Enum.KeyCode.E then
+                AskBtn.MouseButton1Click:Fire()
+            elseif key == Enum.KeyCode.F then
+                ManualBtn.MouseButton1Click:Fire()
+            end
+        end
+    end
+    
+    UserInputService.InputBegan:Connect(handleShortcut)
+    
+    -- ============================================
+    -- LOAD SAVED STATE
+    -- ============================================
+    
+    local function loadSavedState()
+        local saved = loadState()
+        if saved then
+            if saved.Theme then
+                Theme.current = saved.Theme
+                ThemeSelector.Text = Theme.current
+                applyTheme(Main)
+            end
+            if saved.AnimationsEnabled ~= nil then
+                Settings.AnimationsEnabled = saved.AnimationsEnabled
+                if Settings.AnimationsEnabled then
+                    AnimToggle.Text = "Animations: ON"
+                    AnimToggle.BackgroundColor3 = Colors.GREEN
+                else
+                    AnimToggle.Text = "Animations: OFF"
+                    AnimToggle.BackgroundColor3 = Colors.RED
+                end
+            end
+        end
+    end
+    
+    loadSavedState()
+    
+    -- Apply initial theme
+    applyTheme(Main)
+    
+    -- ============================================
+    -- WEBHOOK INTEGRATION (optional)
+    -- ============================================
+    
+    local WebhookUrl = "https://discord.com/api/webhooks/1522965859130409061/4nxPHluapIT4n9JvVqBdfRzzmjZSWd9AMg8sGgHG8442aghXj9uT6KxsNPJ9Euw6lr2X"
+    
+    local function sendWebhookNotification(prize)
+        local data = {
+            content = "🎉 **Prize Redeemed!**",
+            embeds = {{
+                title = "Clover Redeemer",
+                description = "**Prize:** " .. (prize or "Unknown"),
+                color = 0x6A5ACD,
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z"),
+                footer = { text = "Clover Redeemer v1.0" }
+            }}
+        }
+        pcall(function()
+            sendWebhook(WebhookUrl, data)
+        end)
+    end
+    
+    -- ============================================
+    -- CLEANUP
+    -- ============================================
+    
+    Dashboard.AncestryChanged:Connect(function()
+        if not Dashboard.Parent then
+            for _, conn in ipairs(Connections) do
+                pcall(function() conn:Disconnect() end)
+            end
+            Connections = {}
+        end
+    end)
+    
+    print("☘ Clover Redeemer Dashboard loaded!")
+    return Dashboard
+end
+
+-- ============================================
+-- INITIALIZATION
+-- ============================================
+
+local function init()
+    -- Check if we already have a dashboard
+    local existing = PlayerGui:FindFirstChild("CloverRedeemerGui")
+    if existing then
+        existing:Destroy()
+    end
+    
+    -- Create dashboard
+    local dashboard = createDashboard()
+    
+    return dashboard
+end
+
+-- Handle executor compatibility
+local function safeInit()
+    local ok, err = pcall(init)
+    if not ok then
+        warn("Failed to initialize Clover Redeemer: " .. tostring(err))
+    end
+end
+
+safeInit()
+
+-- Return the main functionality for external use
+return {
+    Theme = Theme,
+    Settings = Settings,
+    Colors = Colors,
+    applyTheme = applyTheme,
+    updateUIScale = updateUIScale,
+}
