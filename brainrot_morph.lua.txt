@@ -1,0 +1,463 @@
+-- ══════════════════════════════════════════════════════════
+--  Brainrot Morph — from discord.gg/vonhub
+--  • pick a model from a searchable list
+--  • plays Idle when standing still, Walk when you move
+--  • client-side only: other players still see your real avatar
+-- ══════════════════════════════════════════════════════════
+
+if not game:IsLoaded() then repeat task.wait() until game:IsLoaded() end
+
+local Players    = game:GetService("Players")
+local RS         = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LP         = Players.LocalPlayer
+
+local USE_GETHUI = true
+
+-- Threads started by signals or task.defer can resume at a lower identity than
+-- the one that created them, which makes touching CoreGui-parented UI throw
+-- "lacking capability Plugin".  Re-assert on entry to any such thread.
+local _setIdentity = setthreadidentity or setidentity or set_thread_identity
+    or (syn and syn.set_thread_identity)
+local function Elevate()
+    if _setIdentity then pcall(_setIdentity, 8) end
+end
+
+local MOVE_THRESHOLD = 0.1    -- MoveDirection magnitude that counts as walking
+local MORPH_SPEED    = 8.5     -- studs/s applied while morphed
+local FADE           = 0.15   -- animation crossfade, seconds
+
+-- ── asset provider ───────────────────────────────────────
+local BrainrotAssets; pcall(function() BrainrotAssets = require(RS.Shared.BrainrotAssets) end)
+
+local function GetModel(name)
+    local m
+    if BrainrotAssets and type(BrainrotAssets.getModel) == "function" then
+        pcall(function()
+            local r = BrainrotAssets.getModel(name)
+            if r and r:IsA("Model") then m = r:Clone() end
+        end)
+    end
+    if not m then
+        local f = RS:FindFirstChild("Models")
+        f = f and f:FindFirstChild("Animals")
+        local t = f and f:FindFirstChild(name)
+        if t then m = t:Clone() end
+    end
+    return m
+end
+
+-- ── animal list, sorted by rarity then generation ────────
+local RARITY_RANK = {
+    ["OG"] = 100, ["Admin"] = 90, ["Secret"] = 80, ["Brainrot God"] = 70,
+    ["Mythic"] = 60, ["Legendary"] = 50, ["Epic"] = 40, ["Rare"] = 30, ["Common"] = 20,
+}
+local RARITY_COLOR = {
+    ["OG"] = Color3.fromRGB(255, 215, 90),   ["Admin"] = Color3.fromRGB(255, 105, 180),
+    ["Secret"] = Color3.fromRGB(210, 210, 225), ["Brainrot God"] = Color3.fromRGB(90, 230, 235),
+    ["Mythic"] = Color3.fromRGB(235, 70, 70),   ["Legendary"] = Color3.fromRGB(245, 165, 45),
+    ["Epic"] = Color3.fromRGB(170, 95, 235),    ["Rare"] = Color3.fromRGB(80, 140, 240),
+    ["Common"] = Color3.fromRGB(150, 155, 170),
+}
+local DEFAULT_COLOR = Color3.fromRGB(110, 110, 128)
+
+local function GetAnimals()
+    local data = {}
+    pcall(function() data = require(RS.Datas.Animals) end)
+    local seen, list = {}, {}
+    local function add(name, d)
+        if type(name) ~= "string" or name == "" or seen[name] then return end
+        if d and d.LuckyBlock then return end      -- lucky blocks aren't animals
+        seen[name] = true
+        list[#list+1] = {
+            name = name, lower = name:lower(),
+            rarity = d and d.Rarity or "?",
+            rank = RARITY_RANK[d and d.Rarity] or 0,
+            gen = (d and tonumber(d.Generation)) or 0,
+        }
+    end
+    for name, d in pairs(data) do if type(d) == "table" then add(name, d) end end
+    pcall(function() for _, c in RS.Models.Animals:GetChildren() do add(c.Name, nil) end end)
+    pcall(function() for _, c in RS.Animations.Animals:GetChildren() do add(c.Name, nil) end end)
+    table.sort(list, function(a, b)
+        if a.rank ~= b.rank then return a.rank > b.rank end
+        if a.gen  ~= b.gen  then return a.gen  > b.gen  end
+        return a.name < b.name
+    end)
+    return list
+end
+
+-- ── animation resolution ─────────────────────────────────
+-- Idle is always "Idle"; the walk clip has no stable name, so try the usual
+-- candidates then fall back to any clip that isn't Idle.
+local WALK_NAMES = {"Walk","Walking","Move","Moving","Run","Running"}
+
+local function GetAnims(name)
+    local f = RS:FindFirstChild("Animations")
+    f = f and f:FindFirstChild("Animals")
+    f = f and f:FindFirstChild(name)
+    if not f then return nil, nil end
+    local idle = f:FindFirstChild("Idle")
+    local walk
+    for _, wn in WALK_NAMES do
+        local a = f:FindFirstChild(wn)
+        if a and a:IsA("Animation") then walk = a; break end
+    end
+    if not walk then
+        for _, c in f:GetChildren() do
+            if c:IsA("Animation") and c ~= idle then walk = c; break end
+        end
+    end
+    return idle, walk
+end
+
+local function GetAnimator(model)
+    local ac = model:FindFirstChildOfClass("AnimationController")
+        or model:FindFirstChildWhichIsA("AnimationController", true)
+        or model:FindFirstChildWhichIsA("Humanoid", true)
+    if not ac then ac = Instance.new("AnimationController"); ac.Parent = model end
+    local an = ac:FindFirstChildOfClass("Animator")
+    if not an then an = Instance.new("Animator", ac) end
+    return an
+end
+
+-- ══════════════════════════════════════════════════════════
+--  morph
+-- ══════════════════════════════════════════════════════════
+local ANIMALS = GetAnimals()
+local current = nil          -- name of the equipped brainrot
+local morph   = nil          -- the attached model
+local idleTr, walkTr = nil, nil
+local hidden  = {}           -- [instance] = original value, for restore
+local conn                   -- Heartbeat driver (animation state)
+local speedConn              -- RenderStepped driver (movement)
+
+local function Char()  return LP.Character end
+local function Hum()   local c = Char(); return c and c:FindFirstChildOfClass("Humanoid") end
+local function HRP()   local c = Char(); return c and c:FindFirstChild("HumanoidRootPart") end
+
+-- Hide the real avatar without destroying it: the Humanoid keeps driving
+-- movement, collision and the camera, we just stop drawing it.
+local function SetBodyHidden(on)
+    local c = Char()
+    if not c then return end
+    if on then
+        for _, d in c:GetDescendants() do
+            if morph and d:IsDescendantOf(morph) then
+                -- the brainrot lives inside the character; never hide it
+            elseif d:IsA("BasePart") and hidden[d] == nil then
+                hidden[d] = d.Transparency
+                d.Transparency = 1
+            elseif d:IsA("Decal") and hidden[d] == nil then
+                hidden[d] = d.Transparency
+                d.Transparency = 1
+            end
+        end
+    else
+        for inst, v in pairs(hidden) do
+            pcall(function() if inst.Parent then inst.Transparency = v end end)
+        end
+        hidden = {}
+    end
+end
+
+local function StopAnims()
+    pcall(function() if idleTr then idleTr:Stop(0) end end)
+    pcall(function() if walkTr then walkTr:Stop(0) end end)
+    idleTr, walkTr = nil, nil
+end
+
+local function Unmorph()
+    if conn then conn:Disconnect(); conn = nil end
+    if speedConn then speedConn:Disconnect(); speedConn = nil end
+    StopAnims()
+    if morph then morph:Destroy(); morph = nil end
+    SetBodyHidden(false)
+    current = nil
+end
+
+local function Attach(name)
+    local c, hum, hrp = Char(), Hum(), HRP()
+    if not (c and hum and hrp) then return false, "character not ready" end
+
+    local model = GetModel(name)
+    if not model then return false, "no model for "..name end
+
+    for _, p in model:GetDescendants() do
+        if p:IsA("BasePart") then
+            p.CanCollide, p.CanQuery, p.CanTouch = false, false, false
+            p.Massless = true
+            p.Anchored = false          -- Motor6Ds can't animate anchored parts
+        end
+    end
+
+    local root = model.PrimaryPart
+        or model:FindFirstChild("RootPart")
+        or model:FindFirstChildWhichIsA("BasePart", true)
+    if not root then model:Destroy(); return false, "no root part" end
+
+    SetBodyHidden(true)        -- before parenting: the sweep walks the character
+    model.Parent = c
+
+    -- Sit the rig on the ground under the HumanoidRootPart: the HRP floats
+    -- HipHeight + half its own height above the feet.
+    local footY  = hrp.Position.Y - hum.HipHeight - hrp.Size.Y * 0.5
+    local yaw    = math.atan2(-hrp.CFrame.LookVector.X, -hrp.CFrame.LookVector.Z)
+    local facing = CFrame.new(hrp.Position.X, 0, hrp.Position.Z)
+        * CFrame.Angles(0, yaw, 0)
+
+    model:PivotTo(facing)                              -- orient first
+    local cf, size = model:GetBoundingBox()
+    local lift = footY - (cf.Position.Y - size.Y * 0.5)
+    model:PivotTo(model:GetPivot() + Vector3.new(0, lift, 0))
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = hrp
+    weld.Part1 = root
+    weld.Parent = root
+
+    morph, current = model, name
+
+    task.defer(function()                              -- Animator needs a frame
+        Elevate()
+        if morph ~= model or not model.Parent then return end
+        pcall(function()
+            local idleA, walkA = GetAnims(name)
+            local an = GetAnimator(model)
+            if idleA then idleTr = an:LoadAnimation(idleA); idleTr.Looped = true end
+            if walkA then walkTr = an:LoadAnimation(walkA); walkTr.Looped = true end
+        end)
+        if idleTr then idleTr:Play(0) end
+    end)
+
+    -- Drive idle/walk off the Humanoid's own movement state.
+    conn = RunService.Heartbeat:Connect(function()
+        if not morph or not morph.Parent then return end
+        local h = Hum()
+        if not h then return end
+        local moving = h.MoveDirection.Magnitude > MOVE_THRESHOLD
+        local want   = moving and walkTr or idleTr
+        local other  = moving and idleTr or walkTr
+        if other and other.IsPlaying then other:Stop(FADE) end
+        if want and not want.IsPlaying then want:Play(FADE) end
+    end)
+
+    -- Movement while morphed: each frame, impulse the root assembly so its
+    -- horizontal velocity lands exactly on MORPH_SPEED in the input direction.
+    -- Vertical velocity is left untouched so gravity, jumps and falls behave
+    -- normally, and the impulse is scaled by assembly mass so the result is
+    -- the same regardless of what is welded to you.
+    speedConn = RunService.RenderStepped:Connect(function()
+        if not morph or not morph.Parent then return end
+        local h, root = Hum(), HRP()
+        if not (h and root) then return end
+        local dir = h.MoveDirection
+        if dir.Magnitude <= 0 then return end
+
+        local cur     = root.AssemblyLinearVelocity
+        local desired = Vector3.new(dir.X * MORPH_SPEED, cur.Y, dir.Z * MORPH_SPEED)
+        local delta   = desired - cur
+        local mass    = root.AssemblyMass or 1
+        pcall(function()
+            root:ApplyImpulse(Vector3.new(delta.X, 0, delta.Z) * mass)
+        end)
+    end)
+
+    return true
+end
+
+local function Equip(name)
+    Unmorph()
+    local ok, err = Attach(name)
+    return ok, err
+end
+
+-- Re-apply after death/respawn.
+LP.CharacterAdded:Connect(function(c)
+    Elevate()
+    if not current then return end
+    local name = current
+    c:WaitForChild("HumanoidRootPart", 10)
+    task.wait(0.2)
+    hidden = {}
+    Equip(name)
+end)
+
+-- ══════════════════════════════════════════════════════════
+--  UI
+-- ══════════════════════════════════════════════════════════
+local parentGui
+if USE_GETHUI and typeof(gethui) == "function" then
+    local ok, hui = pcall(gethui)
+    if ok then parentGui = hui end
+end
+parentGui = parentGui or LP:WaitForChild("PlayerGui")
+
+local old = parentGui:FindFirstChild("BrainrotMorphUI")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "BrainrotMorphUI"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = parentGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 280, 0, 420)
+main.Position = UDim2.new(0, 24, 0.5, -210)
+main.BackgroundColor3 = Color3.fromRGB(20, 20, 26)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -70, 0, 30)
+title.Position = UDim2.new(0, 12, 0, 4)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextColor3 = Color3.fromRGB(235, 235, 245)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "Brainrot Morph"
+title.Parent = main
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 26, 0, 26)
+closeBtn.Position = UDim2.new(1, -32, 0, 6)
+closeBtn.BackgroundColor3 = Color3.fromRGB(70, 40, 45)
+closeBtn.BorderSizePixel = 0
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 13
+closeBtn.TextColor3 = Color3.fromRGB(240, 200, 200)
+closeBtn.Text = "X"
+closeBtn.Parent = main
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(1, -24, 0, 28)
+searchBox.Position = UDim2.new(0, 12, 0, 38)
+searchBox.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
+searchBox.BorderSizePixel = 0
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 13
+searchBox.TextColor3 = Color3.fromRGB(235, 235, 245)
+searchBox.PlaceholderText = "Search name..."
+searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 135)
+searchBox.TextXAlignment = Enum.TextXAlignment.Left
+searchBox.ClearTextOnFocus = false
+searchBox.Text = ""
+searchBox.Parent = main
+Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+Instance.new("UIPadding", searchBox).PaddingLeft = UDim.new(0, 8)
+
+local function SmallButton(text, x, w, color)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, w, 0, 26)
+    b.Position = UDim2.new(0, x, 0, 72)
+    b.BackgroundColor3 = color
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 12
+    b.TextColor3 = Color3.fromRGB(235, 235, 245)
+    b.Text = text
+    b.Parent = main
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    return b
+end
+
+local revertBtn = SmallButton("Revert", 12, 110, Color3.fromRGB(70, 40, 45))
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(0, 142, 0, 26)
+status.Position = UDim2.new(0, 130, 0, 72)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Gotham
+status.TextSize = 10
+status.TextColor3 = Color3.fromRGB(140, 140, 158)
+status.TextXAlignment = Enum.TextXAlignment.Right
+status.TextWrapped = true
+status.Text = "not morphed"
+status.Parent = main
+
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1, -24, 1, -112)
+list.Position = UDim2.new(0, 12, 0, 106)
+list.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+list.BackgroundTransparency = 0.4
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 5
+list.CanvasSize = UDim2.new()
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.Parent = main
+Instance.new("UICorner", list).CornerRadius = UDim.new(0, 8)
+local ll = Instance.new("UIListLayout", list)
+ll.Padding = UDim.new(0, 3)
+local lp = Instance.new("UIPadding", list)
+lp.PaddingTop = UDim.new(0, 5); lp.PaddingLeft = UDim.new(0, 5)
+
+local rows = {}
+
+local function Refresh()
+    for _, r in rows do
+        r.btn.BackgroundColor3 = (r.name == current)
+            and Color3.fromRGB(55, 95, 70) or Color3.fromRGB(34, 34, 44)
+    end
+    status.Text = current and ("morphed:\n"..current) or "not morphed"
+end
+
+for i, a in ipairs(ANIMALS) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -10, 0, 24)
+    b.BackgroundColor3 = Color3.fromRGB(34, 34, 44)
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.Gotham
+    b.TextSize = 11
+    b.TextColor3 = Color3.fromRGB(228, 228, 238)
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.Text = "  "..a.name
+    b.LayoutOrder = i
+    b.Parent = list
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 3, 1, -8)
+    dot.Position = UDim2.new(1, -8, 0, 4)
+    dot.BackgroundColor3 = RARITY_COLOR[a.rarity] or DEFAULT_COLOR
+    dot.BorderSizePixel = 0
+    dot.Parent = b
+
+    b.MouseButton1Click:Connect(function()
+        Elevate()
+        status.Text = "loading..."
+        local ok, err = Equip(a.name)
+        if not ok then status.Text = tostring(err) end
+        Refresh()
+    end)
+
+    rows[#rows+1] = {name = a.name, lower = a.lower, btn = b}
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    Elevate()
+    local q = searchBox.Text:lower()
+    for _, r in rows do
+        r.btn.Visible = (q == "") or r.lower:find(q, 1, true) ~= nil
+    end
+    list.CanvasPosition = Vector2.new(0, 0)
+end)
+
+revertBtn.MouseButton1Click:Connect(function()
+    Elevate()
+    Unmorph()
+    Refresh()
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    Elevate()
+    Unmorph()
+    gui:Destroy()
+end)
+
+Refresh()
